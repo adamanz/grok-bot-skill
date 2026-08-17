@@ -1,0 +1,39 @@
+package.json
+  s_56338234e7d9dc::t_353cb9d5a9200d 1-37
+examples.md
+  s_56338234e7d9dc::t_08a6885be9173b 1-68
+SKILL.md
+  s_56338234e7d9dc::t_6ce6306bbf9be9 1-82
+LICENSE
+  s_56338234e7d9dc::t_e6b219ecfa68de 1-21
+.claude-plugin/marketplace.json
+  s_56338234e7d9dc::t_cd3ea941ddbbff 1-20
+.gitignore
+  s_56338234e7d9dc::t_28d39c358c5444 1-9
+SECURITY.md
+  s_56338234e7d9dc::t_1d102e558be7f1 1-10
+CHANGELOG.md
+  s_56338234e7d9dc::t_7002cc747a6b07 1-7
+README.md
+  s_56338234e7d9dc::t_712c5d4f0daf51 1-88
+AGENTS.md
+  s_56338234e7d9dc::t_218ed2dd16edc1 1-11
+scripts/grokbot.py
+  s_56338234e7d9dc::t_ae2390747edf88 1-502
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "d76d6a4a7344ec4b437bc296facb9f004266604d",
+  "prompts": {},
+  "sessions": {
+    "s_56338234e7d9dc": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "556ff93d-8642-46c3-9f5d-ce82e092aaa6",
+        "model": "grok-4.6"
+      },
+      "human_author": "adam <a@thesimple.co>"
+    }
+  }
+}
