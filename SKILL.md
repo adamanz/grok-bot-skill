@@ -9,7 +9,7 @@ description: >-
 license: MIT
 metadata:
   author: adamanz
-  version: "1.0.0"
+  version: "1.0.1"
   homepage: https://github.com/adamanz/grok-bot-skill
 ---
 
@@ -73,7 +73,7 @@ After create, send one concrete first task with `chat` unless the user only want
 
 | Symptom | What to do |
 |---|---|
-| Not signed in / unexpected token format | Ask the user to open Grok Bot and sign in with Cursor |
+| Not signed in / unexpected token format | Ask the user to open Grok Bot and sign in with Cursor. Token storage changed in Grok Bot 0.23 (`cursor-accounts`); this skill reads both the old top-level token and the new account map. |
 | Keychain read failed | Ask them to unlock the login keychain and retry |
 | Access not granted | Eligible plans: SuperGrok Heavy, Cursor Ultra, Cursor Teams Premium |
 | Computer still starting | Wait and rerun `status` until box is running |
