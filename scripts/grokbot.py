@@ -130,6 +130,7 @@ def _stored_access_token(secrets: dict[str, Any]) -> str:
             token = _token_from_accounts(accounts)
             if token:
                 return token
+            raise _unexpected_token()
     stored = secrets.get("cursor-access-token")
     if isinstance(stored, str) and stored:
         return stored
