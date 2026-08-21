@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import hashlib
 import json
 import subprocess
@@ -17,7 +18,7 @@ from typing import Any
 
 SECRETS_PATH = Path.home() / "Library/Application Support/Grok Bot/sand-secrets.json"
 BACKEND = "https://api2.cursor.sh"
-CLIENT_VERSION = "0.18.0"
+CLIENT_VERSION = "0.23.0"
 
 
 class GrokBotError(RuntimeError):
@@ -29,19 +30,7 @@ def _die(message: str, code: int = 1) -> None:
     raise SystemExit(code)
 
 
-def _decrypt_access_token() -> str:
-    if not SECRETS_PATH.exists():
-        raise GrokBotError(
-            "Grok Bot is not signed in on this Mac. Open Grok Bot and sign in with Cursor first."
-        )
-    secrets = json.loads(SECRETS_PATH.read_text())
-    stored = secrets.get("cursor-access-token")
-    if not isinstance(stored, str) or not stored.startswith("scoped:v1:"):
-        raise GrokBotError("Grok Bot access token is missing or in an unexpected format.")
-    rest = stored[len("scoped:v1:") :]
-    raw = base64.b64decode(rest[rest.index(":") + 1 :])
-    if not raw.startswith(b"v10"):
-        raise GrokBotError("Grok Bot access token is not in the expected v10 envelope.")
+def _safe_storage_key() -> bytes:
     try:
         password = subprocess.check_output(
             [
@@ -59,7 +48,12 @@ def _decrypt_access_token() -> str:
         raise GrokBotError(
             "Could not read Grok Bot Safe Storage from Keychain. Unlock the login keychain and retry."
         ) from exc
-    key = hashlib.pbkdf2_hmac("sha1", password.encode(), b"saltysalt", 1003, dklen=16)
+    return hashlib.pbkdf2_hmac("sha1", password.encode(), b"saltysalt", 1003, dklen=16)
+
+
+def _decrypt_v10(raw: bytes) -> str:
+    if not raw.startswith(b"v10"):
+        raise GrokBotError("Grok Bot access token is not in the expected v10 envelope.")
     proc = subprocess.run(
         [
             "openssl",
@@ -67,7 +61,7 @@ def _decrypt_access_token() -> str:
             "-aes-128-cbc",
             "-d",
             "-K",
-            key.hex(),
+            _safe_storage_key().hex(),
             "-iv",
             (b" " * 16).hex(),
             "-nopad",
@@ -79,10 +73,82 @@ def _decrypt_access_token() -> str:
     if proc.returncode != 0:
         raise GrokBotError("Failed to decrypt the Grok Bot access token.")
     plaintext = proc.stdout
+    if not plaintext:
+        raise GrokBotError("Failed to decrypt the Grok Bot access token.")
     pad = plaintext[-1]
     if pad < 1 or pad > 16 or plaintext[-pad:] != bytes([pad]) * pad:
         raise GrokBotError("Failed to unpad the Grok Bot access token.")
     return plaintext[:-pad].decode()
+
+
+def _unexpected_token() -> GrokBotError:
+    return GrokBotError("Grok Bot access token is missing or in an unexpected format.")
+
+
+def _ciphertext_from_stored(stored: str) -> bytes:
+    # App 0.18: scoped:v1:<label>:<base64-v10>
+    if stored.startswith("scoped:v1:"):
+        rest = stored[len("scoped:v1:") :]
+        try:
+            raw = base64.b64decode(rest[rest.index(":") + 1 :])
+        except (ValueError, binascii.Error) as exc:
+            raise _unexpected_token() from exc
+        return raw
+    # App 0.23+: Chromium v10 blob as raw base64 (djEw…)
+    try:
+        raw = base64.b64decode(stored)
+    except (ValueError, binascii.Error) as exc:
+        raise _unexpected_token() from exc
+    if raw.startswith(b"v10"):
+        return raw
+    raise _unexpected_token()
+
+
+def _token_from_accounts(accounts: dict[str, Any]) -> str | None:
+    by_id = accounts.get("accounts")
+    if not isinstance(by_id, dict) or not by_id:
+        return None
+    active = accounts.get("active")
+    row = by_id.get(active) if isinstance(active, str) else None
+    if not isinstance(row, dict) and len(by_id) == 1:
+        row = next(iter(by_id.values()))
+    if not isinstance(row, dict):
+        return None
+    token = row.get("cursor-access-token")
+    return token if isinstance(token, str) and token else None
+
+
+def _stored_access_token(secrets: dict[str, Any]) -> str:
+    # Prefer 0.23+ cursor-accounts so a leftover top-level 0.18 token cannot win.
+    accounts_raw = secrets.get("cursor-accounts")
+    if isinstance(accounts_raw, str) and accounts_raw:
+        try:
+            accounts = json.loads(accounts_raw)
+        except json.JSONDecodeError as exc:
+            raise _unexpected_token() from exc
+        if isinstance(accounts, dict):
+            token = _token_from_accounts(accounts)
+            if token:
+                return token
+            raise _unexpected_token()
+    stored = secrets.get("cursor-access-token")
+    if isinstance(stored, str) and stored:
+        return stored
+    raise _unexpected_token()
+
+
+def _decrypt_access_token() -> str:
+    if not SECRETS_PATH.exists():
+        raise GrokBotError(
+            "Grok Bot is not signed in on this Mac. Open Grok Bot and sign in with Cursor first."
+        )
+    try:
+        secrets = json.loads(SECRETS_PATH.read_text())
+    except json.JSONDecodeError as exc:
+        raise _unexpected_token() from exc
+    if not isinstance(secrets, dict):
+        raise _unexpected_token()
+    return _decrypt_v10(_ciphertext_from_stored(_stored_access_token(secrets)))
 
 
 def _connect(access_token: str, service: str, method: str, body: dict[str, Any] | None = None) -> Any:
