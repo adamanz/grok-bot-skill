@@ -2,7 +2,8 @@
 name: grok-bot
 description: >-
   Chat with Grok Bot teammates, message a named Grok Bot, create a new Grok Bot,
-  list Grok Bots, read a Grok Bot transcript, or operate the xAI Grok Bot
+  list Grok Bots, create and inspect native multi-bot groups, remove group members,
+  read a Grok Bot transcript, or operate the xAI Grok Bot
   desktop app from Cursor, Claude Code, or Codex instead of the UI. Use when
   the user mentions Grok Bot, Grok teammates, Reed, Agent Computer, spinning
   up a new bot, or talking to Grok from the terminal.
@@ -53,6 +54,26 @@ A new bot needs:
 Do not create a second bot with the same name unless the user asks. The CLI refuses duplicates unless `--force` is passed.
 
 After create, send one concrete first task with `chat` unless the user only wanted the empty teammate.
+
+## Native groups
+
+Use `group-create --name NAME --member-name BOT ... --reuse` to create a native
+shared conversation with 2–6 existing, distinct bots. Repeat `--member-id` when
+names are ambiguous. Reuse requires the exact name and member set; it never
+replaces members or starts a conversation. Use the returned group ID with
+`send`, `chat`, or `transcript` when messaging is authorized.
+
+Use `group-info --id ID` to inspect verified members. Use
+`group-remove-member --id GROUP_ID --member-id BOT_ID` (repeat `--member-id`
+as needed) to remove members without deleting their bots or message history.
+Keep at least one bot in the group. Only remove members within the user's
+requested workflow; a controller acting on a bot's withdrawal must verify
+that bot's native author identity rather than trusting another bot's text.
+
+Groups require owned bots on the same runtime. Unknown activity is reported as
+`null`, not idle. Inspect uncertain operations before retrying; mutations are
+not blindly resent. Read [native group details](references/native-groups.md)
+for runtime compatibility, result shapes, and concurrent membership edits.
 
 ## Chat rules
 

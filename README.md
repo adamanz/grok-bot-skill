@@ -50,6 +50,9 @@ The CLI uses your local Grok Bot session. It never prints tokens, gateway URLs, 
 | `create` | Spin up a new named Grok Bot |
 | `update` | Edit name, title, or standing rules |
 | `transcript` | Read recent conversation |
+| `group-create` | Create or reuse a native group of 2–6 existing bots |
+| `group-info` | Inspect a native group and its members |
+| `group-remove-member` | Remove members while preserving bots and history |
 
 ```bash
 SCRIPT="$HOME/.cursor/skills/grok-bot/scripts/grokbot.py"
@@ -62,6 +65,34 @@ python3 "$SCRIPT" create --name Reed --title "Chief of staff" \
 ```
 
 See [examples.md](examples.md) for more prompts and [SKILL.md](SKILL.md) for agent instructions.
+
+## Native shared conversations
+
+```bash
+python3 "$SCRIPT" group-create --name "Planning room" \
+  --member-name "Reed" --member-name "Researcher" --reuse
+python3 "$SCRIPT" group-info --name "Planning room"
+python3 "$SCRIPT" send --name "Planning room" --prompt "Compare your draft plans."
+python3 "$SCRIPT" transcript --name "Planning room" --limit 40
+python3 "$SCRIPT" group-remove-member --name "Planning room" --member-id BOT_ID
+```
+
+The members must already exist. Group creation does not send a prompt or change
+existing bot profiles. `--reuse` accepts only the same name and member set;
+ambiguous names and mismatched membership fail without replacing a room.
+Removal preserves the bots and history and must leave at least one member.
+
+Both older computer-backed and newer server-backed rooms are supported. The
+CLI reads each message's actual author and current running state, including
+rooms not yet opened in the desktop app. This uses the app's private protocol,
+verified against Grok Bot 0.59.1, and is not an official SDK. See
+[native group details](references/native-groups.md) for limitations and results.
+
+Run the mocked regression suite without credentials or live bot actions:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
 
 ## Why this exists
 
