@@ -77,6 +77,12 @@ Keep `MESSAGE_ID` for retries. After a `chat` error during polling, check
 `transcript` before sending again. Without the original ID, a retry could send
 the message twice.
 
+`chat` waits to observe the bot running and then becoming idle. Queued messages
+can leave the bot idle before work starts. If that transition is not observed
+within `--timeout`, output includes `timedOut: true` and the latest transcript.
+A very fast reply can finish between polls, so a timeout means completion is
+unconfirmed; inspect `newEntries` or use `transcript` before deciding to retry.
+
 ## Session troubleshooting
 
 The CLI reads both legacy `scoped:v1:` tokens and the active account in the

@@ -62,6 +62,7 @@ After create, send one concrete first task with `chat` unless the user only want
 - `send` and `chat` accept `--message-id UUID` and return `messageId`. To retry the same message to the same bot after uncertain delivery, reuse that UUID. Network errors during delivery include the UUID. Generate and retain one before sending if the process might be interrupted. Use a new UUID for a new message.
 - If `chat` fails while waiting after sending, check `transcript` before retrying. If no message ID was retained, do not blindly resend: a missing transcript entry does not prove delivery failed.
 - If `stillRunning` is true, say so and offer to poll again. Do not invent a reply.
+- If `timedOut` is true, completion is unconfirmed even when `stillRunning` is false. Check `newEntries` or `transcript`: a queued message may not have started, or a fast reply may have finished between polls. Do not resend with a new message ID.
 - Do not send passwords, API keys, or 2FA codes. Tell the user to take over **Agent Computer** in the Grok Bot app.
 - Do not approve local-computer access unless the user explicitly asked for it.
 

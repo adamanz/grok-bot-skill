@@ -512,16 +512,29 @@ def cmd_chat(args: argparse.Namespace) -> None:
     before = _transcript_entries(_gateway(box, "/api/getAgentTranscript", {"id": agent["id"]}))
     before_ids = {entry.get("id") or entry.get("entryId") for entry in before}
     sent = _send_prompt(access, agent["id"], args.prompt, args.message_id or str(uuid.uuid4()))
-    deadline = time.time() + args.timeout
+    deadline = time.monotonic() + args.timeout
     latest = agent
-    while time.time() < deadline:
-        time.sleep(args.poll)
-        agents = _list_agents(box)
-        latest = next((row for row in agents if row.get("id") == agent["id"]), latest)
-        running = bool(latest.get("isRunning") or latest.get("isRunningTurn") or latest.get("isComposingMessage"))
-        if not running:
-            break
-    after = _transcript_entries(_gateway(box, "/api/getAgentTranscript", {"id": agent["id"]}))
+    saw_running = False
+    timed_out = True
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(args.poll, remaining))
+            agents = _list_agents(box)
+            latest = next((row for row in agents if row.get("id") == agent["id"]), latest)
+            running = bool(latest.get("isRunning") or latest.get("isRunningTurn") or latest.get("isComposingMessage"))
+            if saw_running and not running:
+                timed_out = False
+                break
+            saw_running = saw_running or running
+        after = _transcript_entries(_gateway(box, "/api/getAgentTranscript", {"id": agent["id"]}))
+    except GrokBotError as exc:
+        raise GrokBotError(
+            f"Message {sent['messageId']} was accepted, but waiting for the reply failed: {exc} "
+            "Check the transcript. If retrying, reuse this message ID."
+        ) from exc
     new_entries = [
         entry
         for entry in after
@@ -531,6 +544,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
         json.dumps(
             {
                 "messageId": sent["messageId"],
+                "timedOut": timed_out,
                 "agent": _summarize_agent(latest, full=True),
                 "stillRunning": bool(
                     latest.get("isRunning") or latest.get("isRunningTurn") or latest.get("isComposingMessage")

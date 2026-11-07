@@ -87,7 +87,7 @@ class MessageTest(unittest.TestCase):
         agent = {"id": "agent-1", "name": "Reed", "isRunning": False}
         box = {"gateway_url": "https://example.invalid", "gateway_token": "fake", "network_token": "fake"}
         response = io.BytesIO(json.dumps({"delivery": delivery}).encode())
-        args = argparse.Namespace(id=None, name="Reed", prompt="Hello", message_id=message_id, timeout=1, poll=0.01)
+        args = argparse.Namespace(id=None, name="Reed", prompt="Hello", message_id=message_id, timeout=0.03, poll=0.01)
         output = io.StringIO()
         with patch.object(grokbot, "_session", return_value=("fake-access", box)), patch.object(
             grokbot, "_list_agents", return_value=[agent]
@@ -130,6 +130,47 @@ class MessageTest(unittest.TestCase):
         output, request = self.send("DUPLICATE", command="chat", message_id=message_id)
         self.assertEqual(output["messageId"], message_id)
         self.assertEqual(json.loads(request.data)["messageId"], message_id)
+
+
+class ChatWaitTest(unittest.TestCase):
+    def chat(self, states, *, timeout=90):
+        agent = {"id": "agent-1", "name": "Reed", "isRunning": False}
+        rows = [[agent]] + [[dict(agent, isRunning=running)] for running in states]
+        args = argparse.Namespace(id=None, name="Reed", prompt="Hello", message_id="a6eb9092-1043-4839-a057-27c59f12872a", timeout=timeout, poll=2)
+        output = io.StringIO()
+        with patch.object(grokbot, "_session", return_value=("fake", {})), patch.object(
+            grokbot, "_list_agents", side_effect=rows
+        ) as listed, patch.object(grokbot, "_gateway", return_value=[]), patch.object(
+            grokbot, "_connect", return_value={"delivery": "ACCEPTED_TEMPORAL"}
+        ), patch.object(grokbot.time, "monotonic", side_effect=[0, 0, 2, 4]), patch.object(
+            grokbot.time, "sleep"
+        ), contextlib.redirect_stdout(output):
+            grokbot.cmd_chat(args)
+        return json.loads(output.getvalue()), listed.call_count
+
+    def test_queued_message_waits_through_initial_idle_state(self):
+        output, polls = self.chat([False, True, False])
+        self.assertEqual(polls, 4)
+        self.assertFalse(output["stillRunning"])
+        self.assertFalse(output["timedOut"])
+
+    def test_no_observed_run_is_reported_as_unconfirmed_timeout(self):
+        output, polls = self.chat([False, False], timeout=3)
+        self.assertEqual(polls, 3)
+        self.assertTrue(output["timedOut"])
+        self.assertFalse(output["stillRunning"])
+
+    def test_poll_failure_retains_accepted_message_id(self):
+        agent = {"id": "agent-1", "name": "Reed"}
+        args = argparse.Namespace(id=None, name="Reed", prompt="Hello", message_id="a6eb9092-1043-4839-a057-27c59f12872a", timeout=1, poll=0.01)
+        with patch.object(grokbot, "_session", return_value=("fake", {})), patch.object(
+            grokbot, "_list_agents", side_effect=[[agent], grokbot.GrokBotError("network error")]
+        ), patch.object(grokbot, "_gateway", return_value=[]), patch.object(
+            grokbot, "_connect", return_value={"delivery": 2}
+        ), patch.object(grokbot.time, "sleep"), self.assertRaises(grokbot.GrokBotError) as caught:
+            grokbot.cmd_chat(args)
+        self.assertIn(args.message_id, str(caught.exception))
+        self.assertIn("accepted", str(caught.exception))
 
 
 class ErrorTest(unittest.TestCase):
