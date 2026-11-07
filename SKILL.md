@@ -9,7 +9,7 @@ description: >-
 license: MIT
 metadata:
   author: adamanz
-  version: "1.0.0"
+  version: "1.0.1"
   homepage: https://github.com/adamanz/grok-bot-skill
 ---
 
@@ -29,8 +29,8 @@ The CLI is `scripts/grokbot.py` next to this file. Resolve that path from the
 installed skill directory (often `~/.cursor/skills/grok-bot/scripts/grokbot.py`).
 
 ```bash
-SCRIPT="$(dirname "$0")/scripts/grokbot.py"
-# or, after a global Cursor install:
+# After a global Cursor install. For other installs, use the absolute
+# path to scripts/grokbot.py inside the directory containing this SKILL.md.
 SCRIPT="$HOME/.cursor/skills/grok-bot/scripts/grokbot.py"
 
 python3 "$SCRIPT" status
@@ -59,7 +59,10 @@ After create, send one concrete first task with `chat` unless the user only want
 - Resolve bots by `--name` when unique; use `--id` if names collide.
 - Use `chat` when the user expects an answer in this conversation.
 - Use `send` for long-running work the user will check in the Grok Bot app.
+- `send` and `chat` accept `--message-id UUID` and return `messageId`. To retry the same message to the same bot after uncertain delivery, reuse that UUID. Network errors during delivery include the UUID. Generate and retain one before sending if the process might be interrupted. Use a new UUID for a new message.
+- If `chat` fails while waiting after sending, check `transcript` before retrying. If no message ID was retained, do not blindly resend: a missing transcript entry does not prove delivery failed.
 - If `stillRunning` is true, say so and offer to poll again. Do not invent a reply.
+- If `timedOut` is true, completion is unconfirmed even when `stillRunning` is false. Check `newEntries` or `transcript`: a queued message may not have started, or a fast reply may have finished between polls. Do not resend with a new message ID.
 - Do not send passwords, API keys, or 2FA codes. Tell the user to take over **Agent Computer** in the Grok Bot app.
 - Do not approve local-computer access unless the user explicitly asked for it.
 
@@ -73,10 +76,11 @@ After create, send one concrete first task with `chat` unless the user only want
 
 | Symptom | What to do |
 |---|---|
-| Not signed in / unexpected token format | Ask the user to open Grok Bot and sign in with Cursor |
+| No saved session | Open Grok Bot and sign in with Cursor. If already signed in, fully quit and reopen the app so it saves the session |
+| Unexpected token format / no active account | Update this skill, then select the signed-in account in Grok Bot. The CLI supports legacy scoped tokens and the active entry in the newer saved-account store. Never request the contents of `sand-secrets.json` or a Keychain dump |
 | Keychain read failed | Ask them to unlock the login keychain and retry |
 | Access not granted | Eligible plans: SuperGrok Heavy, Cursor Ultra, Cursor Teams Premium |
 | Computer still starting | Wait and rerun `status` until box is running |
 | No bot with that name | `list` and confirm the name |
 
-If the CLI is missing a command the user needs, read `scripts/grokbot.py --help`. Do not invent new gateway routes in chat.
+If the CLI is missing a command the user needs, run `python3 "$SCRIPT" --help`. Do not invent new gateway routes in chat.
