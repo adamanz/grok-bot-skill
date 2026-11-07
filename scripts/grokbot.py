@@ -5,19 +5,22 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import hashlib
 import json
+import math
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
 
 SECRETS_PATH = Path.home() / "Library/Application Support/Grok Bot/sand-secrets.json"
 BACKEND = "https://api2.cursor.sh"
-CLIENT_VERSION = "0.18.0"
+CLIENT_VERSION = "0.30.0"
 
 
 class GrokBotError(RuntimeError):
@@ -29,19 +32,7 @@ def _die(message: str, code: int = 1) -> None:
     raise SystemExit(code)
 
 
-def _decrypt_access_token() -> str:
-    if not SECRETS_PATH.exists():
-        raise GrokBotError(
-            "Grok Bot is not signed in on this Mac. Open Grok Bot and sign in with Cursor first."
-        )
-    secrets = json.loads(SECRETS_PATH.read_text())
-    stored = secrets.get("cursor-access-token")
-    if not isinstance(stored, str) or not stored.startswith("scoped:v1:"):
-        raise GrokBotError("Grok Bot access token is missing or in an unexpected format.")
-    rest = stored[len("scoped:v1:") :]
-    raw = base64.b64decode(rest[rest.index(":") + 1 :])
-    if not raw.startswith(b"v10"):
-        raise GrokBotError("Grok Bot access token is not in the expected v10 envelope.")
+def _safe_storage_key() -> bytes:
     try:
         password = subprocess.check_output(
             [
@@ -54,12 +45,18 @@ def _decrypt_access_token() -> str:
                 "-w",
             ],
             text=True,
+            stderr=subprocess.PIPE,
         ).rstrip("\n")
-    except subprocess.CalledProcessError as exc:
+    except (subprocess.CalledProcessError, OSError) as exc:
         raise GrokBotError(
             "Could not read Grok Bot Safe Storage from Keychain. Unlock the login keychain and retry."
         ) from exc
-    key = hashlib.pbkdf2_hmac("sha1", password.encode(), b"saltysalt", 1003, dklen=16)
+    return hashlib.pbkdf2_hmac("sha1", password.encode(), b"saltysalt", 1003, dklen=16)
+
+
+def _decrypt_v10(raw: bytes) -> str:
+    if not raw.startswith(b"v10") or len(raw) <= 3 or (len(raw) - 3) % 16:
+        raise GrokBotError("Grok Bot access token is not in the expected v10 envelope.")
     proc = subprocess.run(
         [
             "openssl",
@@ -67,7 +64,7 @@ def _decrypt_access_token() -> str:
             "-aes-128-cbc",
             "-d",
             "-K",
-            key.hex(),
+            _safe_storage_key().hex(),
             "-iv",
             (b" " * 16).hex(),
             "-nopad",
@@ -79,10 +76,98 @@ def _decrypt_access_token() -> str:
     if proc.returncode != 0:
         raise GrokBotError("Failed to decrypt the Grok Bot access token.")
     plaintext = proc.stdout
+    if not plaintext:
+        raise GrokBotError("Failed to decrypt the Grok Bot access token.")
     pad = plaintext[-1]
     if pad < 1 or pad > 16 or plaintext[-pad:] != bytes([pad]) * pad:
         raise GrokBotError("Failed to unpad the Grok Bot access token.")
-    return plaintext[:-pad].decode()
+    try:
+        token = plaintext[:-pad].decode()
+    except UnicodeDecodeError as exc:
+        raise GrokBotError("Failed to decode the Grok Bot access token.") from exc
+    if not token:
+        raise _unexpected_token()
+    return token
+
+
+def _unexpected_token() -> GrokBotError:
+    return GrokBotError(
+        "Grok Bot access token is missing or in an unexpected format. "
+        "Update this skill and select the signed-in account in Grok Bot. "
+        "Do not share sand-secrets.json or Keychain contents."
+    )
+
+
+def _ciphertext_from_stored(stored: str) -> bytes:
+    # App 0.18: scoped:v1:<label>:<base64-v10>
+    if stored.startswith("scoped:v1:"):
+        rest = stored[len("scoped:v1:") :]
+        try:
+            raw = base64.b64decode(rest[rest.index(":") + 1 :], validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise _unexpected_token() from exc
+        return raw
+    # App 0.23+: Chromium v10 blob as raw base64 (djEw…)
+    try:
+        raw = base64.b64decode(stored, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise _unexpected_token() from exc
+    if raw.startswith(b"v10"):
+        return raw
+    raise _unexpected_token()
+
+
+def _token_from_accounts(accounts: dict[str, Any]) -> str | None:
+    by_id = accounts.get("accounts")
+    if not isinstance(by_id, dict) or not by_id:
+        return None
+    active = accounts.get("active")
+    row = by_id.get(active) if isinstance(active, str) else None
+    if not isinstance(row, dict):
+        return None
+    token = row.get("cursor-access-token")
+    return token if isinstance(token, str) and token else None
+
+
+def _stored_access_token(secrets: dict[str, Any]) -> str:
+    # Prefer 0.23+ cursor-accounts so a leftover top-level 0.18 token cannot win.
+    if "cursor-accounts" in secrets:
+        accounts_raw = secrets["cursor-accounts"]
+        if not isinstance(accounts_raw, str):
+            raise _unexpected_token()
+        try:
+            accounts = json.loads(accounts_raw)
+        except json.JSONDecodeError as exc:
+            raise _unexpected_token() from exc
+        if isinstance(accounts, dict):
+            token = _token_from_accounts(accounts)
+            if token:
+                return token
+        raise _unexpected_token()
+    stored = secrets.get("cursor-access-token")
+    if isinstance(stored, str) and stored:
+        return stored
+    raise _unexpected_token()
+
+
+def _decrypt_access_token() -> str:
+    try:
+        secrets = json.loads(SECRETS_PATH.read_text())
+    except FileNotFoundError as exc:
+        raise GrokBotError(
+            "No saved Grok Bot session found. Open Grok Bot and sign in with Cursor. "
+            "If already signed in, fully quit and reopen the app to save the session."
+        ) from exc
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise _unexpected_token() from exc
+    except OSError as exc:
+        raise GrokBotError("Could not read the saved Grok Bot session. Check file permissions.") from exc
+    if not isinstance(secrets, dict):
+        raise _unexpected_token()
+    try:
+        return _decrypt_v10(_ciphertext_from_stored(_stored_access_token(secrets)))
+    except OSError as exc:
+        raise GrokBotError("Could not run OpenSSL to decrypt the saved Grok Bot session.") from exc
 
 
 def _connect(access_token: str, service: str, method: str, body: dict[str, Any] | None = None) -> Any:
@@ -102,26 +187,42 @@ def _connect(access_token: str, service: str, method: str, body: dict[str, Any] 
         headers=headers,
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=90) as resp:
-            raw = resp.read().decode()
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")
-        raise GrokBotError(f"{service}/{method} failed HTTP {exc.code}: {_safe_error(detail)}") from exc
+    return _request_json(req, f"{service}/{method}", timeout=90)
 
 
 def _safe_error(raw: str) -> str:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        return raw[:240]
-    message = parsed.get("message") or parsed.get("code") or "request failed"
-    debug = None
-    details = parsed.get("details")
-    if isinstance(details, list) and details:
-        debug = (details[0].get("debug") or {}).get("error")
-    return f"{message}" + (f" ({debug})" if debug else "")
+        return "request failed"
+    # Server messages and debug fields may contain credentials or private URLs.
+    code = parsed.get("code") if isinstance(parsed, dict) else None
+    known_codes = {
+        "canceled", "unknown", "invalid_argument", "deadline_exceeded", "not_found",
+        "already_exists", "permission_denied", "resource_exhausted", "failed_precondition",
+        "aborted", "out_of_range", "unimplemented", "internal", "unavailable",
+        "data_loss", "unauthenticated",
+    }
+    return code if isinstance(code, str) and code in known_codes else "request failed"
+
+
+def _request_json(req: urllib.request.Request, operation: str, *, timeout: int) -> Any:
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = _safe_error(exc.read().decode(errors="replace"))
+        except OSError:
+            detail = "request failed"
+        finally:
+            exc.close()
+        raise GrokBotError(f"{operation} failed HTTP {exc.code}: {detail}") from exc
+    except (OSError, urllib.error.URLError) as exc:
+        raise GrokBotError(f"{operation} failed: network connection or timeout error.") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise GrokBotError(f"{operation} returned an invalid JSON response.") from exc
 
 
 def _ensure_box(access_token: str) -> dict[str, str]:
@@ -153,13 +254,7 @@ def _gateway(box: dict[str, str], path: str, body: dict[str, Any] | None = None)
         headers=headers,
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=90) as resp:
-            raw = resp.read().decode()
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")
-        raise GrokBotError(f"{path} failed HTTP {exc.code}: {_safe_error(detail)}") from exc
+    return _request_json(req, path, timeout=90)
 
 
 def _session() -> tuple[str, dict[str, str]]:
@@ -281,13 +376,7 @@ def _gateway_get(box: dict[str, str], path: str) -> Any:
         "x-anyrun-network-token": box["network_token"],
     }
     req = urllib.request.Request(url, method="GET", headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw = resp.read().decode()
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")
-        raise GrokBotError(f"{path} failed HTTP {exc.code}: {_safe_error(detail)}") from exc
+    return _request_json(req, path, timeout=30)
 
 
 def cmd_list(args: argparse.Namespace) -> None:
@@ -351,18 +440,39 @@ def cmd_update(args: argparse.Namespace) -> None:
     print(json.dumps(_summarize_agent(_extract_agent(updated), full=True), indent=2))
 
 
+def _send_prompt(access: str, agent_id: str, prompt: str, message_id: str) -> dict[str, Any]:
+    try:
+        result = _connect(access, "aiserver.v1.GrokBotService", "SendGrokBotUserMessage", {
+            "agentId": agent_id,
+            "messageId": message_id,
+            "text": prompt,
+            "sentAtMs": str(int(time.time() * 1000)),
+        })
+    except GrokBotError as exc:
+        raise GrokBotError(
+            f"{exc} Delivery is unconfirmed. Retry the same message to the same bot "
+            f"with --message-id {message_id}."
+        ) from exc
+    accepted = {
+        1, 2, 3, "ACCEPTED_BOX", "ACCEPTED_TEMPORAL", "DUPLICATE",
+        "GROK_BOT_USER_MESSAGE_DELIVERY_ACCEPTED_BOX",
+        "GROK_BOT_USER_MESSAGE_DELIVERY_ACCEPTED_TEMPORAL",
+        "GROK_BOT_USER_MESSAGE_DELIVERY_DUPLICATE",
+    }
+    delivery = result.get("delivery") if isinstance(result, dict) else None
+    if type(delivery) not in (int, str) or delivery not in accepted:
+        raise GrokBotError(f"Message {message_id} was not confirmed accepted.")
+    return {"accepted": True, "messageId": message_id}
+
+
 def cmd_send(args: argparse.Namespace) -> None:
-    _, box = _session()
+    access, box = _session()
     agent = _resolve_agent(box, agent_id=args.id, name=args.name)
-    result = _gateway(
-        box,
-        "/api/sendPrompt",
-        {"agentId": agent["id"], "prompt": args.prompt},
-    )
+    result = _send_prompt(access, agent["id"], args.prompt, args.message_id or str(uuid.uuid4()))
     print(
         json.dumps(
             {
-                "accepted": bool(isinstance(result, dict) and result.get("accepted", True)),
+                **result,
                 "agent": _summarize_agent(agent),
             },
             indent=2,
@@ -397,13 +507,11 @@ def cmd_transcript(args: argparse.Namespace) -> None:
 
 
 def cmd_chat(args: argparse.Namespace) -> None:
-    _, box = _session()
+    access, box = _session()
     agent = _resolve_agent(box, agent_id=args.id, name=args.name)
     before = _transcript_entries(_gateway(box, "/api/getAgentTranscript", {"id": agent["id"]}))
     before_ids = {entry.get("id") or entry.get("entryId") for entry in before}
-    sent = _gateway(box, "/api/sendPrompt", {"agentId": agent["id"], "prompt": args.prompt})
-    if isinstance(sent, dict) and sent.get("accepted") is False:
-        raise GrokBotError("sendPrompt was not accepted.")
+    sent = _send_prompt(access, agent["id"], args.prompt, args.message_id or str(uuid.uuid4()))
     deadline = time.time() + args.timeout
     latest = agent
     while time.time() < deadline:
@@ -422,6 +530,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
     print(
         json.dumps(
             {
+                "messageId": sent["messageId"],
                 "agent": _summarize_agent(latest, full=True),
                 "stillRunning": bool(
                     latest.get("isRunning") or latest.get("isRunningTurn") or latest.get("isComposingMessage")
@@ -442,8 +551,30 @@ def cmd_chat(args: argparse.Namespace) -> None:
 
 
 def _add_agent_selector(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--id", help="Grok Bot UUID")
-    parser.add_argument("--name", help="Grok Bot display name")
+    selector = parser.add_mutually_exclusive_group(required=True)
+    selector.add_argument("--id", help="Grok Bot UUID")
+    selector.add_argument("--name", help="Grok Bot display name")
+
+
+def _positive_seconds(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError("must be a finite number greater than zero")
+    return number
+
+
+def _nonnegative_int(value: str) -> int:
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be zero or greater")
+    return number
+
+
+def _message_id(value: str) -> str:
+    try:
+        return str(uuid.UUID(value))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a UUID") from exc
 
 
 def main() -> None:
@@ -471,16 +602,18 @@ def main() -> None:
     send_p = sub.add_parser("send", help="Send a message without waiting")
     _add_agent_selector(send_p)
     send_p.add_argument("--prompt", required=True)
+    send_p.add_argument("--message-id", type=_message_id, help="Reuse the same UUID when retrying a message")
 
     chat_p = sub.add_parser("chat", help="Send a message and wait for new replies")
     _add_agent_selector(chat_p)
     chat_p.add_argument("--prompt", required=True)
-    chat_p.add_argument("--timeout", type=int, default=90)
-    chat_p.add_argument("--poll", type=float, default=2.0)
+    chat_p.add_argument("--message-id", type=_message_id, help="Reuse the same UUID when retrying a message")
+    chat_p.add_argument("--timeout", type=_positive_seconds, default=90)
+    chat_p.add_argument("--poll", type=_positive_seconds, default=2.0)
 
     transcript_p = sub.add_parser("transcript", help="Read a Grok Bot conversation")
     _add_agent_selector(transcript_p)
-    transcript_p.add_argument("--limit", type=int, default=20)
+    transcript_p.add_argument("--limit", type=_nonnegative_int, default=20, help="Recent entries to show; 0 shows all")
 
     args = parser.parse_args()
     commands = {

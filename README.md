@@ -35,7 +35,7 @@ Then ask Cursor: **“list my Grok Bots”** or **“message Reed”**.
 
 - macOS with the **Grok Bot** desktop app installed and signed in
 - An eligible plan (SuperGrok Heavy, Cursor Ultra, or Cursor Teams Premium)
-- Python 3 (stdlib only — no pip packages)
+- Python 3.10 or newer, plus macOS `security` and `openssl` commands. No pip packages are needed.
 
 The CLI uses your local Grok Bot session. It never prints tokens, gateway URLs, or Keychain material.
 
@@ -62,6 +62,43 @@ python3 "$SCRIPT" create --name Reed --title "Chief of staff" \
 ```
 
 See [examples.md](examples.md) for more prompts and [SKILL.md](SKILL.md) for agent instructions.
+
+Both `send` and `chat` return a `messageId` and accept `--message-id UUID`.
+Reuse the same UUID, bot, and prompt when retrying uncertain delivery to avoid
+duplicate messages. Use a new UUID for each new message. To retain the ID even
+if the process is interrupted, generate it before sending:
+
+```bash
+MESSAGE_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+python3 "$SCRIPT" send --name Reed --prompt "Summarize your progress" --message-id "$MESSAGE_ID"
+```
+
+Keep `MESSAGE_ID` for retries. After a `chat` error during polling, check
+`transcript` before sending again. Without the original ID, a retry could send
+the message twice.
+
+## Session troubleshooting
+
+The CLI reads both legacy `scoped:v1:` tokens and the active account in the
+newer `cursor-accounts` store. It does not choose an inactive saved account or
+fall back to a stale legacy token when a saved-account store is present.
+
+If no saved session exists, open Grok Bot and sign in with Cursor. If the app
+is already signed in, fully quit and reopen it to save the session. For an
+unexpected-format error, update this skill and select your signed-in account
+in the app. Never paste `sand-secrets.json` or Keychain contents into an issue.
+
+## Development
+
+Run the regression tests from the repository root:
+
+```bash
+python3 -m unittest discover -s scripts -p 'test_*.py' -v
+```
+
+Tests use synthetic credentials and simulated HTTP responses. They do not
+access your Keychain, contact Grok Bot, or send messages. OpenSSL is required
+for the encrypted-session fixtures.
 
 ## Why this exists
 
